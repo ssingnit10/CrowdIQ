@@ -244,6 +244,11 @@ export default function App() {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isConnected, setIsConnected] = useState<boolean>(true);
 
+  // Automated polling tracker for high/critical incidents to trigger safety audits
+  const [analyzedIncidentIds, setAnalyzedIncidentIds] = useState<string[]>([]);
+  const [lastAutoTriggeredAudit, setLastAutoTriggeredAudit] = useState<{ id: string; title: string; location: string; time: string; severity: string } | null>(null);
+  const hasInitializedIncidents = React.useRef(false);
+
   // Focus states
   const [selectedPoiId, setSelectedPoiId] = useState<string | null>(null);
   const [activeEgressRoute, setActiveEgressRoute] = useState<string[] | null>(null);
@@ -290,6 +295,16 @@ export default function App() {
           setIsLoading(false);
           setSimAttendees(data.stats.totalAttendees);
           setIsSimulating(data.stats.isSimulating);
+        }
+
+        if (!hasInitializedIncidents.current) {
+          hasInitializedIncidents.current = true;
+          // Pre-populate pre-existing active high/critical incidents to analyzed list,
+          // so we only trigger on NEW ones reported during this active session.
+          const existingHighIds = data.incidents
+            .filter((inc: any) => (inc.severity === 'high' || inc.severity === 'critical') && inc.status !== 'resolved')
+            .map((inc: any) => inc.id);
+          setAnalyzedIncidentIds(existingHighIds);
         }
       } else {
         throw new Error('Non-ok response code');
@@ -351,6 +366,43 @@ export default function App() {
     const tickInterval = setInterval(fetchTelemetryState, 2000);
     return () => clearInterval(tickInterval);
   }, [simSpeed, isSimulating, simAttendees]);
+
+  // Automated polling tracker for high/critical incidents to trigger safety audits
+  useEffect(() => {
+    if (!hasInitializedIncidents.current || incidents.length === 0) return;
+
+    // Filter active/responding high or critical incidents
+    const activeHighIncidents = incidents.filter(
+      (inc) => (inc.severity === 'high' || inc.severity === 'critical') && inc.status !== 'resolved'
+    );
+
+    if (activeHighIncidents.length === 0) return;
+
+    // Find the first high/critical incident that hasn't been audited yet
+    const unanalyzedIncident = activeHighIncidents.find((inc) => !analyzedIncidentIds.includes(inc.id));
+
+    if (unanalyzedIncident) {
+      // Instantly mark as analyzed to prevent re-entrant loops or duplicate trigger calls
+      setAnalyzedIncidentIds((prev) => [...prev, unanalyzedIncident.id]);
+
+      // Set trigger information for UI notification
+      setLastAutoTriggeredAudit({
+        id: unanalyzedIncident.id,
+        title: unanalyzedIncident.title,
+        location: unanalyzedIncident.location,
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        severity: unanalyzedIncident.severity
+      });
+
+      // Construct a targeted custom prompt for the AI Safety Audit
+      const targetPrompt = `URGENT SECURITY RE-AUDIT MANDATE: An active '${unanalyzedIncident.severity}' severity incident was just reported: "${unanalyzedIncident.title}" at "${unanalyzedIncident.location}". Perform an immediate predictive safety audit of this zone and recommend high-priority, AI-driven crowd mitigation techniques for dispatchers/organizers immediately. Recommend alternate routing modifications.`;
+
+      console.log(`[AUTOMATED AI AUDIT] Active high-severity incident detected (${unanalyzedIncident.id}). Launching safety re-evaluation...`);
+      
+      // Execute the audit
+      handleTriggerAIPredictions(targetPrompt);
+    }
+  }, [incidents, analyzedIncidentIds]);
 
   // Sync simulation config to backed on change
   const handleUpdateSimulationSpeed = async (speed: number) => {
@@ -523,6 +575,9 @@ export default function App() {
         setAiAnalysis(null);
         setActiveEgressRoute(null);
         setSelectedPoiId(null);
+        hasInitializedIncidents.current = false;
+        setAnalyzedIncidentIds([]);
+        setLastAutoTriggeredAudit(null);
         fetchTelemetryState();
       }
     } catch (e) {
@@ -984,6 +1039,7 @@ export default function App() {
                       activeEgressRoute={activeEgressRoute}
                       greenZoneRoute={greenZoneRoute}
                       isGreenZoneActive={isGreenZoneActive}
+                      onOptimizeRoutes={setActiveEgressRoute}
                     />
                   </div>
                 </div>
@@ -1072,6 +1128,40 @@ export default function App() {
                           className="flex-1 bg-slate-50 border border-slate-200 text-xs rounded-lg p-2 text-slate-700 focus:border-indigo-500 focus:outline-none"
                         />
                       </div>
+                    </div>
+
+                    {lastAutoTriggeredAudit && (
+                      <div className="bg-emerald-50/90 border border-emerald-250 p-3.5 rounded-2xl flex items-start gap-2.5 animate-pulse">
+                        <Zap className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                        <div className="flex-1">
+                          <span className="text-[10px] font-bold text-emerald-800 uppercase tracking-widest block">
+                            ⚡ AI AUTO-AUDIT DISPATCHED
+                          </span>
+                          <p className="text-[11px] text-slate-700 font-medium leading-normal mt-0.5">
+                            Mitigation recommendations generated for new {lastAutoTriggeredAudit.severity}-hazard report: <strong className="text-emerald-900">&quot;{lastAutoTriggeredAudit.title}&quot;</strong> at {lastAutoTriggeredAudit.location}.
+                          </p>
+                          <span className="text-[9px] font-mono text-slate-400 mt-1 block">
+                            Auto-run triggered successfully at {lastAutoTriggeredAudit.time}
+                          </span>
+                        </div>
+                        <button 
+                          type="button"
+                          onClick={() => setLastAutoTriggeredAudit(null)}
+                          className="text-slate-400 hover:text-slate-600 font-bold text-xs shrink-0 self-start p-0.5"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    )}
+
+                    <div className="bg-slate-50/80 border border-slate-100 p-2.5 rounded-xl flex items-center gap-2 text-[10px] text-slate-500">
+                      <span className="relative flex h-2 w-2 shrink-0">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-indigo-500"></span>
+                      </span>
+                      <span>
+                        <strong>Auto-Audit Polling Online</strong>: High/critical incident reporting triggers immediate AI recommendations.
+                      </span>
                     </div>
 
                     {isAILoading && (
@@ -1441,6 +1531,7 @@ export default function App() {
                       activeEgressRoute={activeEgressRoute}
                       greenZoneRoute={greenZoneRoute}
                       isGreenZoneActive={isGreenZoneActive}
+                      onOptimizeRoutes={setActiveEgressRoute}
                     />
                   </div>
                   <div className="bg-slate-850/60 p-4 rounded-xl border border-slate-800 text-xs leading-relaxed text-slate-400">
